@@ -1,0 +1,152 @@
+<style>
+  html, body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: #16161e;            /* shows around the Dynamic Island / notch */
+    overscroll-behavior: none;
+  }
+  /* Terminal area: pinned below the island, above the key bar (+ keyboard).
+     --kb-gap (px) is set by JS = key bar height + on-screen-keyboard height.
+     --z is the zoom factor (A- / A+ buttons): the box is laid out 1/z times the
+     visible size, then `transform: scale(z)` (top-left origin) shrinks it to fit,
+     so xterm's FitAddon — which reads the untransformed box — lays out more,
+     smaller rows/cols. At --z:1 everything reduces to a no-op. */
+  #terminal-container {
+    position: fixed !important;
+    top: env(safe-area-inset-top) !important;
+    left: 0 !important; right: auto !important; bottom: auto !important;
+    width: calc(100% / var(--z, 1)) !important;
+    height: calc((100% - var(--kb-gap, 52px) - env(safe-area-inset-top)) / var(--z, 1)) !important;
+    transform-origin: top left;
+    transform: scale(var(--z, 1));
+    padding: 4px 6px 0 !important;
+    box-sizing: border-box !important;
+  }
+  #kb {
+    position: fixed; left: 0; right: 0;
+    bottom: var(--kbd, 0px);        /* JS lifts it above the soft keyboard */
+    display: flex; gap: 6px; align-items: stretch;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+    background: #16161e; border-top: 1px solid #2a2e3f;
+    font: 700 16px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap;
+    z-index: 2147483647; user-select: none; -webkit-user-select: none;
+  }
+  #kb button {
+    flex: 0 0 auto; min-width: 46px; min-height: 40px; padding: 0 13px;
+    color: #c0caf5; background: #232634; border: 1px solid #2f3447;
+    border-radius: 9px; font: inherit; line-height: 1; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  #kb button:active { background: #3b4261; }
+  #kb button.arr { background: #1f2335; border-color: #3d59a1; color: #7aa2f7; font-size: 21px; min-width: 50px; }
+  #kb button.kbd { background: #1f2335; border-color: #3d59a1; color: #7aa2f7; font-size: 18px; }
+  #kb button.on  { background: #7aa2f7; color: #16161e; border-color: #7aa2f7; }
+  #kb .sp { flex: 0 0 8px; }
+</style>
+<div id="kb"></div>
+<script>
+(function () {
+  var TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  var root = document.documentElement;
+  function ta() { return document.querySelector('.xterm-helper-textarea'); }
+
+  // --- send synthetic keystrokes into xterm.js's hidden textarea -------------
+  // dispatchEvent fires xterm's keydown listener even when the textarea isn't
+  // focused, so the bar works without summoning the on-screen keyboard.
+  function fire(init) {
+    var t = ta(); if (!t) return;
+    t.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, init)));
+  }
+  var ctrlOn = false, ctrlBtn = null;
+  function setCtrl(v) { ctrlOn = v; if (ctrlBtn) ctrlBtn.classList.toggle('on', v); }
+  function key(k, code, keyCode) {
+    fire({ key: k, code: code, keyCode: keyCode, which: keyCode, ctrlKey: ctrlOn });
+    if (ctrlOn) setCtrl(false);
+  }
+  function ctrlKey(ch, code, keyCode) { fire({ key: ch, code: code, keyCode: keyCode, which: keyCode, ctrlKey: true }); }
+  function prefixThen(k, code, keyCode) {            // tmux: Ctrl-b then <key>
+    ctrlKey('b', 'KeyB', 66);
+    setTimeout(function () { fire({ key: k, code: code, keyCode: keyCode, which: keyCode }); }, 25);
+  }
+  function burst(n, fn, gap) { for (var i = 0; i < n; i++) setTimeout(fn, i * (gap || 14)); }
+
+  // --- build the bar ---------------------------------------------------------
+  var KB = document.getElementById('kb');
+  function btn(label, cls, fn) {
+    var b = document.createElement('button');
+    b.textContent = label; if (cls) b.className = cls;
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); });  // don't steal focus
+    b.addEventListener('click', function (e) { e.preventDefault(); fn(b); });
+    KB.appendChild(b); return b;
+  }
+  function sp() { var s = document.createElement('span'); s.className = 'sp'; KB.appendChild(s); }
+
+  btn('←', 'arr', function () { key('ArrowLeft',  'ArrowLeft',  37); });
+  btn('↓', 'arr', function () { key('ArrowDown',  'ArrowDown',  40); });
+  btn('↑', 'arr', function () { key('ArrowUp',    'ArrowUp',    38); });
+  btn('→', 'arr', function () { key('ArrowRight', 'ArrowRight', 39); });
+  btn('⏎', 'arr', function () { key('Enter', 'Enter', 13); });            // right by the arrows: select / confirm
+  sp();
+  btn('Scrl', '', function () {                                            // enter tmux copy mode + page up
+    prefixThen('PageUp', 'PageUp', 33);
+    setTimeout(function () { key('PageUp', 'PageUp', 33); }, 70);
+  });
+  btn('⇞', '', function () { burst(2, function () { key('PageUp',   'PageUp',   33); }); });   // page up
+  btn('⇟', '', function () { burst(2, function () { key('PageDown', 'PageDown', 34); }); });   // page down
+  btn('⤓', '', function () { key('Escape', 'Escape', 27); });             // exit copy mode → jump to live bottom
+  sp();
+  btn('🔍−', 'kbd', function () { setZoom(zoom - 0.1); });                 // smaller text, more rows
+  btn('🔍+', 'kbd', function () { setZoom(zoom + 0.1); });                 // bigger text
+  sp();
+  btn('Esc', '', function () { key('Escape', 'Escape', 27); });
+  btn('Tab', '', function () { key('Tab', 'Tab', 9); });
+  sp();
+  ctrlBtn = btn('Ctrl', '', function () { setCtrl(!ctrlOn); var t = ta(); if (t) t.focus(); });  // arming Ctrl ⇒ about to type ⇒ show keyboard
+  btn('^C', '', function () { ctrlKey('c', 'KeyC', 67); });
+  btn('^X', '', function () { ctrlKey('x', 'KeyX', 88); });
+  btn('^V', '', function () { ctrlKey('v', 'KeyV', 86); });
+  sp();
+  btn('^B', '', function () { ctrlKey('b', 'KeyB', 66); });               // tmux prefix
+
+  // ttyd focuses the terminal on connect, which pops the on-screen keyboard.
+  // On touch devices, undo that so the keyboard only appears when asked for.
+  if (TOUCH) {
+    var unfocus = function () { var t = ta(); if (t && document.activeElement === t) t.blur(); };
+    setTimeout(unfocus, 150); setTimeout(unfocus, 700);
+  }
+
+  // --- zoom (A- / A+) --------------------------------------------------------
+  var zoom = parseFloat((function () { try { return localStorage.getItem('kbZoom'); } catch (e) { return null; } })() || '1') || 1;
+  function setZoom(z) {
+    zoom = Math.round(Math.max(0.5, Math.min(1.4, z)) * 10) / 10;
+    root.style.setProperty('--z', zoom);
+    try { localStorage.setItem('kbZoom', zoom); } catch (e) {}
+    layout();
+  }
+
+  // --- keep the terminal sized to the *visible* area (above the keyboard) -----
+  var inLayout = false;
+  function layout() {
+    if (inLayout) return;            // ignore the resize event we dispatch below
+    inLayout = true;
+    try {
+      var vv = window.visualViewport;
+      var kbd = vv ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)) : 0;
+      root.style.setProperty('--kbd', kbd + 'px');
+      var barH = KB.offsetHeight || 52;
+      root.style.setProperty('--kb-gap', (kbd + barH) + 'px');
+      window.dispatchEvent(new Event('resize'));   // nudge xterm's FitAddon
+    } finally { setTimeout(function () { inLayout = false; }, 0); }
+  }
+  root.style.setProperty('--z', zoom);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', layout);
+    window.visualViewport.addEventListener('scroll', layout);
+  }
+  window.addEventListener('resize', layout);
+  setTimeout(layout, 200);
+  setTimeout(layout, 800);
+  setTimeout(layout, 1600);
+})();
+</script>
