@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <!-- phone-terminal — phosphor-green prompt on palette ink black (#2) -->
+  <rect width="180" height="180" fill="#16161A"/>
+  <polyline points="52,58 84,90 52,122" fill="none" stroke="#39D353" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="96" y="114" width="38" height="14" rx="4" fill="#39D353"/>
+</svg>

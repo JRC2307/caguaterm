@@ -164,8 +164,11 @@ mkdir -p ~/.local/share/ttyd-web
 ```
 
 **`~/.local/share/ttyd-web/keybar.head.html`** — `<head>` additions: a proper mobile
-viewport, dark theme color, and the iOS standalone-app metadata so the status-bar strip
-around the notch / Dynamic Island is dark instead of white:
+viewport, dark theme color, the iOS standalone-app metadata so the status-bar strip
+around the notch / Dynamic Island is dark instead of white, and a home-screen icon.
+ttyd serves exactly one file, so the `apple-touch-icon` is embedded as a base64 data
+URI instead of a separate PNG (generate yours with
+`base64 -i your-icon-180.png | tr -d '\n'` — a 180×180 flat PNG stays ~2 KB):
 
 ```bash
 cat > ~/.local/share/ttyd-web/keybar.head.html <<'EOF'
@@ -174,6 +177,7 @@ cat > ~/.local/share/ttyd-web/keybar.head.html <<'EOF'
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Terminal">
 <meta name="mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="data:image/png;base64,YOUR-BASE64-PNG">
 EOF
 ```
 
