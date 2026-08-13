@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Serve a persistent tmux session ("main") as a web terminal via ttyd.
 #
-# Reachable over Tailscale at:  http://js-mac-mini.tail82f3c6.ts.net:7681
+# Reachable over Tailscale at:  http://js-mac-mini.triceratops-adelie.ts.net:7681
 # (binds 0.0.0.0; remote access is gated by the tailnet — WireGuard-encrypted,
 #  not exposed to the public internet. Optionally front it with `tailscale
 #  serve` for an HTTPS URL with no port: see notes at bottom of this file.)
@@ -18,7 +18,15 @@ exec /opt/homebrew/bin/ttyd \
   --index "$HOME/.local/share/ttyd-web/index.html" \
   --client-option fontSize=16 \
   --client-option 'theme={"background":"#1a1b26"}' \
+  --client-option 'rendererType=dom' \
   /opt/homebrew/bin/tmux new -A -s main -c "$HOME/Desktop/1"
+
+# rendererType=dom: ttyd defaults to WebGL, which paints text on a canvas.
+# On a canvas there is no real text node, so iOS Safari's long-press
+# "select" gesture has nothing to grab. The DOM renderer outputs each row
+# as real DOM nodes — native selection (and the Copy button in the key
+# bar) then work normally. Trade-off: a bit slower on heavy output. Fine
+# for an interactive shell session.
 
 # Custom index.html = ttyd's stock client + an on-screen key bar (arrows, Esc,
 # Tab, Ctrl, ^B tmux prefix, window nav). Rebuild it after upgrading ttyd:
@@ -30,5 +38,5 @@ exec /opt/homebrew/bin/ttyd \
 #    -> Settings -> Feature previews / "HTTPS Certificates" + enable Serve.
 # 2. Change --port above to:  --interface 127.0.0.1 --port 7681
 # 3. Run:  tailscale serve --bg --https=443 localhost:7681
-# 4. Then browse to:  https://js-mac-mini.tail82f3c6.ts.net/
+# 4. Then browse to:  https://js-mac-mini.triceratops-adelie.ts.net/
 # -------------------------------------------------------------------------
