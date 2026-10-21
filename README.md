@@ -193,73 +193,242 @@ cat > ~/.local/share/ttyd-web/keybar.snippet.html <<'EOF'
     overscroll-behavior: none;
   }
   /* Terminal area: pinned below the island, above the key bar (+ keyboard).
-     --kb-gap (px) is set by JS = key bar height + on-screen-keyboard height.
-     --z is the zoom factor (🔍 buttons): the box is laid out 1/z times the
-     visible size, then `transform: scale(z)` (top-left origin) shrinks it to fit,
-     so xterm's FitAddon — which reads the untransformed box — lays out more,
-     smaller rows/cols. At --z:1 everything reduces to a no-op. */
+     --kb-gap (px) is set by JS = bar height + on-screen-keyboard height.
+     Zoom is a real xterm fontSize change (window.term.options.fontSize), NOT a
+     CSS transform — transforms desync tap coordinates from xterm's cell math.
+     Horizontal env() insets keep the first column readable in landscape. */
   #terminal-container {
     position: fixed !important;
     top: env(safe-area-inset-top) !important;
-    left: 0 !important; right: auto !important; bottom: auto !important;
-    width: calc(100% / var(--z, 1)) !important;
-    height: calc((100% - var(--kb-gap, 52px) - env(safe-area-inset-top)) / var(--z, 1)) !important;
-    transform-origin: top left;
-    transform: scale(var(--z, 1));
-    padding: 4px 6px 0 !important;
+    left: 0 !important; right: 0 !important; bottom: auto !important;
+    width: 100% !important;
+    height: calc(100% - var(--kb-gap, 64px) - env(safe-area-inset-top)) !important;
+    padding: 4px calc(6px + env(safe-area-inset-right)) 0 calc(6px + env(safe-area-inset-left)) !important;
     box-sizing: border-box !important;
   }
-  #kb {
+  /* --sab is zeroed by JS while the soft keyboard is up: the bar then sits on
+     the keyboard, not the home indicator, so the inset is dead space. */
+  #bar {
     position: fixed; left: 0; right: 0;
     bottom: var(--kbd, 0px);        /* JS lifts it above the soft keyboard */
-    display: flex; gap: 6px; align-items: stretch;
-    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
-    box-sizing: border-box;
     background: #16161e; border-top: 1px solid #2a2e3f;
-    font: 700 16px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-    overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: var(--sab, env(safe-area-inset-bottom));
     z-index: 2147483647; user-select: none; -webkit-user-select: none;
+    font: 700 16px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   }
+  #expired {
+    display: none;
+    padding: 8px; text-align: center;
+  }
+  #expired.show { display: block; }
+  #expired button {
+    min-height: 44px; padding: 0 16px; width: 100%;
+    background: #7aa2f7; color: #16161e; border: 0; border-radius: 9px;
+    font: 700 15px/1 -apple-system, system-ui, sans-serif; cursor: pointer;
+  }
+  /* Single scrollable row — vertical space on the phone beats visible keys. */
+  #kb {
+    display: flex; gap: 6px; align-items: stretch;
+    padding: 6px 8px; box-sizing: border-box;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap;
+    scrollbar-width: none;
+  }
+  #kb::-webkit-scrollbar { display: none; }
   #kb button {
-    flex: 0 0 auto; min-width: 46px; min-height: 40px; padding: 0 13px;
+    flex: 0 0 auto; min-width: 46px; min-height: 44px; padding: 0 13px;
     color: #c0caf5; background: #232634; border: 1px solid #2f3447;
     border-radius: 9px; font: inherit; line-height: 1; cursor: pointer;
     -webkit-tap-highlight-color: transparent; touch-action: manipulation;
   }
   #kb button:active { background: #3b4261; }
   #kb button.arr { background: #1f2335; border-color: #3d59a1; color: #7aa2f7; font-size: 21px; min-width: 50px; }
-  #kb button.kbd { background: #1f2335; border-color: #3d59a1; color: #7aa2f7; font-size: 18px; }
   #kb button.on  { background: #7aa2f7; color: #16161e; border-color: #7aa2f7; }
-  #kb .sp { flex: 0 0 8px; }
+  #kb button.tm  { background: #1f2a22; border-color: #4f8a5a; color: #9ece6a; }   /* tmux actions: ledger / agents */
+  #kb button.sel-on { background: #9ece6a; color: #16161e; border-color: #9ece6a; }
+  #kb .sp { flex: 0 0 6px; }
+  /* Selection mode: xterm's handlers are muted (capture-phase stopPropagation
+     in JS) and the DOM-renderer rows become real selectable text. */
+  body.selmode .xterm-rows, body.selmode .xterm-rows * {
+    user-select: text !important; -webkit-user-select: text !important;
+    cursor: text;
+  }
+  body.selmode #terminal-container { outline: 2px solid #9ece6a; outline-offset: -2px; }
 </style>
-<div id="kb"></div>
+<div id="bar">
+  <div id="expired"></div>
+  <div id="kb"></div>
+</div>
 <script>
 (function () {
   var TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
   var root = document.documentElement;
+  var PORT = location.port;
+  var IS_OPENCODE = PORT === '7682' || PORT === '4096';
   function ta() { return document.querySelector('.xterm-helper-textarea'); }
+  function container() { return document.getElementById('terminal-container'); }
+  function hasSelection() { return !!(window.getSelection && String(window.getSelection())); }
 
   // --- send synthetic keystrokes into xterm.js's hidden textarea -------------
-  // dispatchEvent fires xterm's keydown listener even when the textarea isn't
-  // focused, so the bar works without summoning the on-screen keyboard.
   function fire(init) {
     var t = ta(); if (!t) return;
     t.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, init)));
+    // xterm sets _keyDownSeen on keydown and only clears it on keyup; without
+    // this, the flag stays true and xterm's input handler drops every composed
+    // insertText (iOS QuickType / dictation / autocorrect / emoji keyboard).
+    t.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', code: 'ShiftLeft', keyCode: 16, which: 16, bubbles: true }));
   }
-  var ctrlOn = false, ctrlBtn = null;
-  function setCtrl(v) { ctrlOn = v; if (ctrlBtn) ctrlBtn.classList.toggle('on', v); }
+  var ctrlOn = false, ctrlBtn = null, ctrlTimer = null;
+  function setCtrl(v) {
+    ctrlOn = v;
+    if (ctrlBtn) ctrlBtn.classList.toggle('on', v);
+    if (ctrlTimer) { clearTimeout(ctrlTimer); ctrlTimer = null; }
+    if (v) ctrlTimer = setTimeout(function () { setCtrl(false); }, 6000);
+  }
   function key(k, code, keyCode) {
     fire({ key: k, code: code, keyCode: keyCode, which: keyCode, ctrlKey: ctrlOn });
     if (ctrlOn) setCtrl(false);
   }
   function ctrlKey(ch, code, keyCode) { fire({ key: ch, code: code, keyCode: keyCode, which: keyCode, ctrlKey: true }); }
+  function burst(n, fn, gap) { for (var i = 0; i < n; i++) setTimeout(fn, i * (gap || 14)); }
   function prefixThen(k, code, keyCode) {            // tmux: Ctrl-b then <key>
     ctrlKey('b', 'KeyB', 66);
     setTimeout(function () { fire({ key: k, code: code, keyCode: keyCode, which: keyCode }); }, 25);
   }
-  function burst(n, fn, gap) { for (var i = 0; i < n; i++) setTimeout(fn, i * (gap || 14)); }
 
-  // --- build the bar ---------------------------------------------------------
+  // Sticky Ctrl for the iOS soft keyboard: characters typed there arrive via
+  // beforeinput/input on the helper textarea, never as keydown — so translate
+  // the next typed char to its control code and feed it straight to xterm.
+  function ctrlTransform(ch) {
+    if (ch === ' ') return '\x00';
+    if (ch === '?') return '\x7f';
+    var c = ch.toUpperCase().charCodeAt(0);
+    if (c >= 64 && c < 128) return String.fromCharCode(c & 31);
+    return null;                     // digits/punctuation: let them through untouched
+  }
+  function termInput(data) {
+    if (window.term && typeof window.term.input === 'function') {
+      try { window.term.input(data, true); return true; } catch (e) {}
+    }
+    return false;
+  }
+  // tmux prefix (Ctrl-b) + one printable char, e.g. 'L' / 'A'. The bytes go
+  // straight into xterm's input pipe as ONE write ("\x02L"): that is exact
+  // (uppercase survives; a synthetic keydown's shiftKey is ignored by xterm,
+  // which just uses ev.key) and has no inter-key timing for tmux to trip on.
+  // Falls back to synthetic events if window.term is not exposed.
+  function tmuxPrefixChar(ch) {
+    setCtrl(false);
+    if (termInput('\x02' + ch)) return;
+    var up = ch.toUpperCase() === ch && ch.toLowerCase() !== ch;
+    var kc = ch.toUpperCase().charCodeAt(0);
+    ctrlKey('b', 'KeyB', 66);
+    setTimeout(function () {
+      fire({ key: ch, code: 'Key' + ch.toUpperCase(), keyCode: kc, which: kc, shiftKey: up });
+    }, 30);
+  }
+  document.addEventListener('beforeinput', function (e) {
+    if (!ctrlOn) return;
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('xterm-helper-textarea')) return;
+    if (e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return;
+    var out = ctrlTransform(e.data);
+    if (out === null) { setCtrl(false); return; }
+    e.preventDefault(); e.stopPropagation();
+    termInput(out);
+    setCtrl(false);
+  }, true);
+  document.addEventListener('keydown', function (e) {   // hardware keyboards
+    if (!ctrlOn || e.isTrusted === false) return;
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('xterm-helper-textarea')) return;
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.keyCode === 229) return;
+    var out = ctrlTransform(e.key);
+    if (out === null) { setCtrl(false); return; }
+    e.preventDefault(); e.stopPropagation();
+    termInput(out);
+    setCtrl(false);
+  }, true);
+
+  // iOS dictation (board 1665): Safari delivers every recognition update as an
+  // insertText whose data is the WHOLE phrase so far ("agrega", "agrega en", ...)
+  // and xterm forwards e.data verbatim, so the terminal got the cumulative text
+  // repeated. Diff each multi-char insert against the previous one: erase the
+  // divergent tail with DEL and type only the new suffix. Single chars (normal
+  // typing) and unrelated multi-char inserts (QuickType words) pass untouched.
+  var dict = { last: '', at: 0 };
+  var DICT_WINDOW_MS = 6000;
+  function dictReset() { dict.last = ''; dict.at = 0; }
+  function commonPrefix(a, b, fold) {
+    var n = Math.min(a.length, b.length), i = 0;
+    if (fold) { a = a.toLowerCase(); b = b.toLowerCase(); }
+    while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+    return i;
+  }
+  document.addEventListener('beforeinput', function (e) {
+    if (ctrlOn || e.defaultPrevented) return;
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('xterm-helper-textarea')) return;
+    if (e.inputType !== 'insertText' && e.inputType !== 'insertReplacementText') return;
+    var data = e.data;
+    if (data == null && e.dataTransfer) { try { data = e.dataTransfer.getData('text/plain'); } catch (_) { data = ''; } }
+    if (!data) return;
+    var now = Date.now();
+    if (now - dict.at > DICT_WINDOW_MS) dictReset();
+    if (data.length === 1) { dictReset(); return; }          // ordinary keystroke
+    var prev = dict.last;
+    var out = data;
+    if (prev && commonPrefix(prev, data, true) > 0) {        // revision of the running phrase
+      var p = commonPrefix(prev, data, false);
+      out = new Array(prev.length - p + 1).join('\x7f') + data.slice(p);
+    }
+    e.preventDefault(); e.stopPropagation();
+    if (out) termInput(out);
+    dict.last = data; dict.at = now;
+  }, true);
+  document.addEventListener('keydown', function (e) { if (e.isTrusted !== false && e.keyCode !== 229) dictReset(); }, true);
+  document.addEventListener('compositionend', dictReset, true);
+  document.addEventListener('focusout', function (e) {
+    var t = e.target; if (t && t.classList && t.classList.contains('xterm-helper-textarea')) dictReset();
+  }, true);
+
+  // Blur-then-focus in one gesture forces WebKit to re-present the keyboard
+  // even when the textarea is (stale-)focused already.
+  function raiseKbd() {
+    var t = ta(); if (!t) return;
+    t.blur(); t.focus();
+  }
+
+  // --- session-expiry watch ---------------------------------------------------
+  // The auth proxy's cookie can expire/be revoked; without this the terminal
+  // just goes dead with no hint. Cheap poll; 401 → show a sign-in banner.
+  // (Window switching itself is done by tapping tmux's own status bar — taps
+  // are cell-accurate now that zoom is a real fontSize change.)
+  if (!IS_OPENCODE) {
+    var EXP = document.getElementById('expired');
+    var expBtn = document.createElement('button');
+    expBtn.textContent = 'Session expired — tap to sign in';
+    expBtn.addEventListener('click', function () { location.reload(); });
+    EXP.appendChild(expBtn);
+    function checkSession() {
+      if (document.hidden) return;
+      fetch(location.origin + '/tmux/tabs', { credentials: 'same-origin' })
+        .then(function (r) {
+          var show = r.status === 401;
+          if (show !== EXP.classList.contains('show')) {
+            EXP.classList.toggle('show', show);
+            layout();
+          }
+        }, function () {});
+    }
+    setInterval(checkSession, 60000);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) checkSession();
+    });
+  }
+
+  // --- build the key bar (single scrollable row) ------------------------------
   var KB = document.getElementById('kb');
   function btn(label, cls, fn) {
     var b = document.createElement('button');
@@ -270,73 +439,332 @@ cat > ~/.local/share/ttyd-web/keybar.snippet.html <<'EOF'
   }
   function sp() { var s = document.createElement('span'); s.className = 'sp'; KB.appendChild(s); }
 
+  var kbdBtn = null, selBtn = null;
+
   btn('←', 'arr', function () { key('ArrowLeft',  'ArrowLeft',  37); });
   btn('↓', 'arr', function () { key('ArrowDown',  'ArrowDown',  40); });
   btn('↑', 'arr', function () { key('ArrowUp',    'ArrowUp',    38); });
   btn('→', 'arr', function () { key('ArrowRight', 'ArrowRight', 39); });
-  btn('⏎', 'arr', function () { key('Enter', 'Enter', 13); });            // right by the arrows: select / confirm
+  btn('⏎', 'arr', function () { key('Enter', 'Enter', 13); });
+  sp();
+  btn('Esc', '', function () { key('Escape', 'Escape', 27); });
+  btn('Tab', '', function () { key('Tab', 'Tab', 9); });
+  ctrlBtn = btn('Ctrl', '', function () {
+    setCtrl(!ctrlOn);
+    if (ctrlOn) raiseKbd();          // about to type the combo → summon keyboard
+  });
+  btn('^C', '', function () { ctrlKey('c', 'KeyC', 67); });
+  btn('^B', '', function () { ctrlKey('b', 'KeyB', 66); });               // tmux prefix
+  btn('ledger', 'tm', function () { tmuxPrefixChar('L'); });              // prefix L: change-record pane/popup
+  btn('agents', 'tm', function () { tmuxPrefixChar('A'); });              // prefix A: board of all Claude sessions
+  sp();
+  var selOn = false;
+  selBtn = btn('Sel', '', function () {
+    selOn = !selOn;
+    setCtrl(false);
+    selBtn.classList.toggle('sel-on', selOn);
+    document.body.classList.toggle('selmode', selOn);
+    if (!selOn && window.getSelection) window.getSelection().removeAllRanges();
+  });
+  var copyBtn = btn('Copy', '', function () {
+    var text = window.getSelection ? String(window.getSelection()) : '';
+    if (!text) return;
+    function flash() {
+      copyBtn.classList.add('on');
+      setTimeout(function () { copyBtn.classList.remove('on'); }, 220);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash, function () {});
+    } else {
+      var tmp = document.createElement('textarea');
+      tmp.value = text; document.body.appendChild(tmp);
+      tmp.select();
+      try { document.execCommand('copy'); flash(); } catch (e) {}
+      document.body.removeChild(tmp);
+    }
+  });
+  var pasteBtn = btn('Paste', '', function () {
+    if (!navigator.clipboard || !navigator.clipboard.readText) return;
+    navigator.clipboard.readText().then(function (text) {
+      if (!text) return;
+      var t = ta(); if (!t) return;
+      var dt;
+      try { dt = new DataTransfer(); dt.setData('text/plain', text); } catch (e) {}
+      if (dt && typeof ClipboardEvent === 'function') {
+        try {
+          t.dispatchEvent(new ClipboardEvent('paste', {
+            clipboardData: dt, bubbles: true, cancelable: true
+          }));
+        } catch (e) {}
+      }
+      pasteBtn.classList.add('on');
+      setTimeout(function () { pasteBtn.classList.remove('on'); }, 220);
+    }, function () {});
+  });
+  sp();
+  btn('A−', '', function () { setFontSize(fontSize - 1); });
+  btn('A+', '', function () { setFontSize(fontSize + 1); });
+  kbdBtn = btn('⌨', '', function () {
+    if (kbdOpen) { var t = ta(); if (t) t.blur(); }
+    else raiseKbd();
+  });
+  // Extras (kept from the earlier bar; one-finger drag already scrolls, these
+  // are for precise paging). Trailing so the main keys stay first in the row.
   sp();
   btn('Scrl', '', function () {                                            // enter tmux copy mode + page up
     prefixThen('PageUp', 'PageUp', 33);
     setTimeout(function () { key('PageUp', 'PageUp', 33); }, 70);
   });
-  btn('⇞', '', function () { burst(2, function () { key('PageUp',   'PageUp',   33); }); });   // page up
-  btn('⇟', '', function () { burst(2, function () { key('PageDown', 'PageDown', 34); }); });   // page down
-  btn('⤓', '', function () { key('Escape', 'Escape', 27); });             // exit copy mode → jump to live bottom
-  sp();
-  btn('🔍−', 'kbd', function () { setZoom(zoom - 0.1); });                 // smaller text, more rows
-  btn('🔍+', 'kbd', function () { setZoom(zoom + 0.1); });                 // bigger text
-  sp();
-  btn('Esc', '', function () { key('Escape', 'Escape', 27); });
-  btn('Tab', '', function () { key('Tab', 'Tab', 9); });
-  sp();
-  ctrlBtn = btn('Ctrl', '', function () { setCtrl(!ctrlOn); var t = ta(); if (t) t.focus(); });  // arming Ctrl ⇒ about to type ⇒ show keyboard
-  btn('^C', '', function () { ctrlKey('c', 'KeyC', 67); });
+  btn('⇞', '', function () { burst(2, function () { key('PageUp',   'PageUp',   33); }); });
+  btn('⇟', '', function () { burst(2, function () { key('PageDown', 'PageDown', 34); }); });
+  btn('⤓', '', function () { key('Escape', 'Escape', 27); });             // leave copy mode → live bottom
   btn('^X', '', function () { ctrlKey('x', 'KeyX', 88); });
   btn('^V', '', function () { ctrlKey('v', 'KeyV', 86); });
-  sp();
-  btn('^B', '', function () { ctrlKey('b', 'KeyB', 66); });               // tmux prefix
+  if (IS_OPENCODE) {
+    sp();
+    btn('^XL', '', function () {                                           // list sessions
+      ctrlKey('x', 'KeyX', 88);
+      setTimeout(function () { key('l', 'KeyL', 76); }, 30);
+    });
+    btn('^XN', '', function () {                                           // new session
+      ctrlKey('x', 'KeyX', 88);
+      setTimeout(function () { key('n', 'KeyN', 78); }, 30);
+    });
+    btn('/Cmd', '', function () {
+      fire({ key: '/', code: 'Slash', keyCode: 191, which: 191 });
+    });
+  }
+
+  // Selection-mode muter: silence xterm's mouse handling so the browser's own
+  // selection machinery runs. Touch/wheel events are only muted once a
+  // selection EXISTS — before that, drag-to-scroll still works, so a long
+  // capture can be scrolled to, long-pressed, and extended. Mouse events are
+  // always muted in Sel mode (desktop drag-select).
+  var MUTE_TOUCH = { touchstart: 1, touchmove: 1, touchend: 1, wheel: 1 };
+  ['mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend',
+   'pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu',
+   'wheel'].forEach(function (ev) {
+    document.addEventListener(ev, function (e) {
+      if (!selOn) return;
+      var c = container();
+      if (!c || !c.contains(e.target)) return;
+      if (MUTE_TOUCH[e.type] && !hasSelection()) return;
+      e.stopPropagation();           // default browser behavior still runs
+    }, true);
+  });
 
   // ttyd focuses the terminal on connect, which pops the on-screen keyboard.
-  // On touch devices, undo that so the keyboard only appears when asked for
-  // (tap inside the terminal, or arm Ctrl).
+  // On touch devices, undo that so the keyboard only appears when asked for.
   if (TOUCH) {
     var unfocus = function () { var t = ta(); if (t && document.activeElement === t) t.blur(); };
     setTimeout(unfocus, 150); setTimeout(unfocus, 700);
   }
 
-  // --- zoom (🔍− / 🔍+) ------------------------------------------------------
-  var zoom = parseFloat((function () { try { return localStorage.getItem('kbZoom'); } catch (e) { return null; } })() || '1') || 1;
-  function setZoom(z) {
-    zoom = Math.round(Math.max(0.5, Math.min(1.4, z)) * 10) / 10;
-    root.style.setProperty('--z', zoom);
-    try { localStorage.setItem('kbZoom', zoom); } catch (e) {}
-    layout();
+  // --- zoom = real xterm font size ------------------------------------------
+  var fontSize = parseInt((function () { try { return localStorage.getItem('kbFontSize'); } catch (e) { return null; } })() || '16', 10) || 16;
+  function applyFontSize() {
+    if (window.term && window.term.options) {
+      try { window.term.options.fontSize = fontSize; } catch (e) {}
+      scheduleFit();
+    }
   }
-
-  // --- keep the terminal sized to the *visible* area (above the keyboard) -----
-  var inLayout = false;
-  function layout() {
-    if (inLayout) return;            // ignore the resize event we dispatch below
-    inLayout = true;
+  function setFontSize(n) {
+    fontSize = Math.max(10, Math.min(24, n));
+    try { localStorage.setItem('kbFontSize', String(fontSize)); } catch (e) {}
+    // Mirror into the query string: ttyd re-reads URL options on every
+    // reconnect (they outrank server prefs), so reconnects keep the zoom.
     try {
-      var vv = window.visualViewport;
-      var kbd = vv ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)) : 0;
-      root.style.setProperty('--kbd', kbd + 'px');
-      var barH = KB.offsetHeight || 52;
-      root.style.setProperty('--kb-gap', (kbd + barH) + 'px');
-      window.dispatchEvent(new Event('resize'));   // nudge xterm's FitAddon
-    } finally { setTimeout(function () { inLayout = false; }, 0); }
+      var u = new URL(location.href);
+      u.searchParams.set('fontSize', String(fontSize));
+      history.replaceState(null, '', u);
+    } catch (e) {}
+    applyFontSize();
   }
-  root.style.setProperty('--z', zoom);
+  // Reconciler instead of a one-shot: ttyd's SET_PREFERENCES lands whenever
+  // the (possibly slow, cellular) WS connects and resets fontSize to the
+  // server default — keep putting the user's choice back.
+  var blurHooked = false;
+  setInterval(function () {
+    var t = window.term;
+    if (t && t.options && t.options.fontSize !== fontSize) applyFontSize();
+    if (!blurHooked) {
+      var el = ta();
+      if (el) {
+        blurHooked = true;
+        el.addEventListener('blur', function () { kbdOpen = false; if (kbdBtn) kbdBtn.classList.remove('on'); });
+      }
+    }
+  }, 500);
+
+  // --- keep the terminal sized to the *visible* area (above the keyboard) ----
+  // CSS vars update synchronously so geometry tracks the keyboard animation,
+  // but the expensive part (FitAddon refit → SIGWINCH → tmux redraw) is
+  // coalesced: one leading rAF fit + one trailing fit after the viewport
+  // settles, instead of ~60/s during the keyboard animation.
+  var BAR = document.getElementById('bar');
+  var kbdOpen = false;
+  var lastKbd = -1, lastGap = -1, fitting = false, fitRaf = null, fitTimer = null;
+  function doFit() {
+    fitting = true;
+    try { window.dispatchEvent(new Event('resize')); } finally { fitting = false; }
+  }
+  function scheduleFit() {
+    if (!fitRaf) fitRaf = requestAnimationFrame(function () { fitRaf = null; doFit(); });
+    if (fitTimer) clearTimeout(fitTimer);
+    fitTimer = setTimeout(doFit, 300);
+  }
+  function layout() {
+    var vv = window.visualViewport;
+    var kbd = vv ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)) : 0;
+    if (kbd > 40) root.style.setProperty('--sab', '0px');
+    else root.style.removeProperty('--sab');
+    kbdOpen = kbd > 150;
+    if (kbdBtn) kbdBtn.classList.toggle('on', kbdOpen);
+    root.style.setProperty('--kbd', kbd + 'px');
+    var barH = BAR.offsetHeight || 64;
+    var gap = kbd + barH;
+    root.style.setProperty('--kb-gap', gap + 'px');
+    if (kbd !== lastKbd || gap !== lastGap) {
+      lastKbd = kbd; lastGap = gap;
+      scheduleFit();
+    }
+  }
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', layout);
     window.visualViewport.addEventListener('scroll', layout);
   }
-  window.addEventListener('resize', layout);
+  window.addEventListener('resize', function () { if (!fitting) layout(); });
   setTimeout(layout, 200);
   setTimeout(layout, 800);
   setTimeout(layout, 1600);
+
+  // --- one-finger drag scrolling, routed INTO tmux ---------------------------
+  // tmux runs on the alternate screen, so the scrollback lives in tmux, not in
+  // xterm's local viewport. Synthesize wheel events on the terminal: xterm
+  // forwards them to tmux as mouse-wheel input (mouse mode is on), which
+  // enters copy-mode and scrolls real history.
+  //   - Coordinates matter: without clientX/Y the wheel report lands at cell
+  //     1,1 = tmux's status line (status-position top), where wheel bindings
+  //     switch windows or do nothing. Clamp below the status row.
+  //   - PX_PER_WHEEL: 0.2 ≈ 1:1 finger tracking (xterm accumulates deltaY into
+  //     one wheel notch per row-height, tmux scrolls 5 lines per notch);
+  //     0.4 = 2x — content moves twice as far as the finger.
+  if (TOUCH) {
+    var dragY = null, dragX = 0, dragMoved = false, velocity = 0, lastT = 0, momentumId = null;
+    var THRESHOLD = 12;      // px before a touch counts as a drag, not a tap
+    var PX_PER_WHEEL = 0.4;
+
+    function rowH() { return Math.max(8, Math.round(fontSize * 1.2)); }
+    function sendWheel(dy, x, y) {
+      var el = document.querySelector('.xterm-screen') || container();
+      if (!el) return;
+      var r = el.getBoundingClientRect();
+      var cx = Math.min(Math.max(x || 0, r.left + 2), r.right - 2);
+      var cy = Math.min(Math.max(y || 0, r.top + rowH() * 1.5), r.bottom - 2);
+      el.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: dy, deltaMode: 0, clientX: cx, clientY: cy,
+        bubbles: true, cancelable: true
+      }));
+    }
+    function stopMomentum() {
+      if (momentumId) { cancelAnimationFrame(momentumId); momentumId = null; }
+      velocity = 0;
+    }
+    var momY = 0;
+    function momentum() {
+      sendWheel(velocity * PX_PER_WHEEL, dragX, momY);
+      velocity *= 0.94;
+      if (Math.abs(velocity) < 1) { momentumId = null; velocity = 0; return; }
+      momentumId = requestAnimationFrame(momentum);
+    }
+
+    var c = container();
+    if (c) {
+      // Fingers: 1 = normal drag, 2 = 2x faster, 3+ = 5x faster (the old
+      // "multi-finger scroll", now routed through tmux like the 1-finger drag).
+      function avg(touches, prop) {
+        var sum = 0;
+        for (var i = 0; i < touches.length; i++) sum += touches[i][prop];
+        return sum / touches.length;
+      }
+      var fingers = 0;
+      function mult() { return fingers >= 3 ? 5 : fingers === 2 ? 2 : 1; }
+      c.addEventListener('touchstart', function (e) {
+        stopMomentum();
+        if (selOn && hasSelection()) return;
+        if (e.touches.length >= 1) {
+          fingers = e.touches.length;
+          dragY = avg(e.touches, 'clientY'); dragX = avg(e.touches, 'clientX');
+          dragMoved = false; lastT = e.timeStamp;
+        } else {
+          dragY = null;
+        }
+      }, { passive: true });
+      c.addEventListener('touchmove', function (e) {
+        if (dragY === null) return;
+        if (selOn && hasSelection()) { dragY = null; return; }
+        var y = avg(e.touches, 'clientY');
+        dragX = avg(e.touches, 'clientX');
+        if (e.touches.length !== fingers) {            // finger added/lifted: re-baseline, no jump
+          fingers = e.touches.length; dragY = y; lastT = e.timeStamp; velocity = 0;
+          return;
+        }
+        var dy = dragY - y;
+        if (!dragMoved && Math.abs(dy) < THRESHOLD) return;
+        if (!dragMoved) { dragMoved = true; dy = dy > 0 ? dy - THRESHOLD : dy + THRESHOLD; }
+        dy *= mult();
+        dragY = y; momY = y;
+        var dt = Math.max(1, e.timeStamp - lastT);
+        velocity = 0.7 * velocity + 0.3 * (dy / dt * 16);   // smoothed px/frame
+        lastT = e.timeStamp;
+        sendWheel(dy * PX_PER_WHEEL, dragX, y);
+        e.preventDefault();
+      }, { passive: false });
+      c.addEventListener('touchend', function (e) {
+        if (dragY !== null && dragMoved && e.touches.length === 0) {
+          if (e.timeStamp - lastT > 80) velocity = 0;   // finger paused → no fling
+          if (Math.abs(velocity) > 3) momentumId = requestAnimationFrame(momentum);
+          else velocity = 0;
+        }
+        if (e.touches.length === 0) dragY = null;
+        else { fingers = e.touches.length; dragY = avg(e.touches, 'clientY'); lastT = e.timeStamp; velocity = 0; }
+        setTimeout(function () { dragMoved = false; }, 80);
+      });
+      c.addEventListener('touchcancel', function () { dragY = null; velocity = 0; dragMoved = false; fingers = 0; });
+      // A drag must not fall through as a click/tap into the terminal.
+      ['click', 'mousedown', 'mouseup'].forEach(function (ev) {
+        c.addEventListener(ev, function (e) {
+          if (dragMoved) { e.stopPropagation(); e.preventDefault(); }
+        }, true);
+      });
+    }
+  }
+
+  // --- OSC 52: forward in-terminal copies to the BROWSER clipboard ---------
+  // Inner TUIs (hermes chat, tmux copy-mode with set-clipboard on) emit
+  // OSC 52 to publish a copy. Stock ttyd/xterm.js ignores it, so the text
+  // only ever reached the HOST machine's clipboard via pbcopy — useless from
+  // a phone/laptop viewing this page. Register a handler so the copy lands
+  // in the viewing device's clipboard. Payload: "<target>;<base64 text>";
+  // "?" is a clipboard READ request, which we deliberately do not serve.
+  (function hookOsc52() {
+    var t = window.term;
+    if (!t || !t.parser || !t.parser.registerOscHandler) {
+      return void setTimeout(hookOsc52, 300);
+    }
+    t.parser.registerOscHandler(52, function (data) {
+      try {
+        var semi = data.indexOf(';');
+        var payload = semi >= 0 ? data.slice(semi + 1) : data;
+        if (!payload || payload === '?') return true;
+        var text = decodeURIComponent(escape(atob(payload)));
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(function () {});
+        }
+      } catch (e) {}
+      return true; // handled — don't let it fall through
+    });
+  })();
 })();
 </script>
 EOF

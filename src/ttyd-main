@@ -1,10 +1,17 @@
 #!/bin/zsh
 # Serve a persistent tmux session ("main") as a web terminal via ttyd.
 #
-# Reachable over Tailscale at:  http://js-mac-mini.triceratops-adelie.ts.net:7681
-# (binds 0.0.0.0; remote access is gated by the tailnet — WireGuard-encrypted,
-#  not exposed to the public internet. Optionally front it with `tailscale
-#  serve` for an HTTPS URL with no port: see notes at bottom of this file.)
+# Reachable over Tailscale at:  https://js-mac-mini.triceratops-adelie.ts.net:7681
+# Binds 127.0.0.1 ONLY and requires Basic auth. `tailscale serve --https=7681`
+# fronts it for the tailnet.
+#
+# Hardened (2026-07): loopback bind + Basic auth from a credential file. A bare
+# 0.0.0.0 bind exposes a writable shell to the whole LAN, and the tailnet is NOT an
+# authentication boundary (a lost phone is a tailnet device).
+#
+# No --check-origin: tailscale serve rewrites Host on the way to loopback, so
+# the Origin check misfires and refuses every websocket ("press Enter to
+# reconnect" loop). Basic auth + loopback bind remain the security boundary.
 #
 # The tmux session survives disconnects, so `claude` keeps running between
 # phone/laptop sessions. Start it once inside the session, e.g.:
@@ -12,9 +19,18 @@
 
 export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
+CRED_FILE="$HOME/.config/ttyd/credential"
+if [[ ! -s "$CRED_FILE" ]]; then
+  print -u2 "ttyd-main: missing $CRED_FILE (expected 'user:password', chmod 600) — refusing to start an unauthenticated shell"
+  exit 1
+fi
+CRED="$(<"$CRED_FILE")"
+
 exec /opt/homebrew/bin/ttyd \
   --writable \
+  --interface 127.0.0.1 \
   --port 7681 \
+  --credential "$CRED" \
   --index "$HOME/.local/share/ttyd-web/index.html" \
   --client-option fontSize=16 \
   --client-option 'theme={"background":"#1a1b26"}' \

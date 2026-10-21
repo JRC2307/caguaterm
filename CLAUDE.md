@@ -119,14 +119,22 @@ constraints baked into the existing code that are easy to break:
 
 - `fire()` uses `dispatchEvent` (not `.focus()` + key entry) precisely so the
   iOS keyboard stays down. Don't "fix" that by focusing the textarea.
-- Layout uses CSS `--z` (zoom) and `--kb-gap` (keybar + soft-keyboard height)
-  custom properties, updated from `visualViewport` events. xterm.js's FitAddon
-  reads the *untransformed* container size, which is why the zoom is implemented
-  as `width: 100%/var(--z)` + `transform: scale(var(--z))` instead of a font
-  size change.
-- Two-finger / three-finger touch scroll is wired directly to
-  `.xterm-viewport.scrollTop` to stay responsive over flaky cell links (no
-  WebSocket round-trip).
+- Layout uses CSS `--kb-gap` (keybar + soft-keyboard height) and `--kbd`/`--sab`,
+  updated from `visualViewport` events. Zoom (`A-`/`A+`) is a real xterm
+  `options.fontSize` change, NOT a CSS transform: transforms desync tap
+  coordinates from xterm's cell math.
+- Touch scroll (1 finger; 2 fingers = 2x, 3+ = 5x) synthesises wheel events on
+  the terminal so tmux (alt screen, mouse on) scrolls its own scrollback.
+- `ledger` / `agents` buttons send `\x02L` / `\x02A` (tmux prefix + uppercase
+  letter) in ONE write via `window.term.input()` -- xterm ignores a synthetic
+  keydown's `shiftKey`, so don't build them from `fire()` unless that fallback is
+  all you have. They need `bind L` / `bind A` from `src/tmux.conf` and
+  `~/bin/ledger*` (dotfiles) on the Mac.
+- `ttyd` reads `--index` per request: after `build.sh` a page reload is enough,
+  no restart needed (both `:7681` main and the `hermes` ttyd share the file).
+- Test without touching live sessions: run a throwaway ttyd on another port with
+  `tmux -L phonetest ...` and drive it with playwright at 390x844 (a
+  `ledger`-tap should show a popup; read `.xterm-rows` text).
 - Clipboard `Paste` requires a secure context — it will silently no-op over
   the plain-HTTP Tailscale URL. To make it work, front ttyd with
   `tailscale serve --bg --https=443 localhost:7681` (see comment block at
